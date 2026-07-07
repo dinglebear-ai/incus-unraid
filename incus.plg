@@ -49,18 +49,20 @@ fi
 # bash/PHP/Node without a native addon): atomic exclusive create, stale timeout,
 # never blocks the install indefinitely.
 CFG_LOCK="&plugin;/incus.cfg.lock"
-CFG_LOCK_HELD=0
+CFG_LOCK_TOKEN=""
 cfg_lock_acquire() {
   local waited=0
+  local token="$$-$RANDOM"
   while true; do
     if ( set -o noclobber; : > "$CFG_LOCK" ) 2>/dev/null; then
-      echo "$$" > "$CFG_LOCK"
-      CFG_LOCK_HELD=1
+      echo "$token" > "$CFG_LOCK"
+      CFG_LOCK_TOKEN="$token"
       return 0
     fi
     local mtime
     mtime=$(stat -c %Y "$CFG_LOCK" 2>/dev/null || echo 0)
     if [ $(( $(date +%s) - mtime )) -gt 15 ]; then
+      echo "incus: stealing stale incus.cfg lock (holder likely crashed)" >&amp;2
       rm -f "$CFG_LOCK" # holder likely crashed; steal it
       continue
     fi
@@ -70,10 +72,16 @@ cfg_lock_acquire() {
   done
 }
 cfg_lock_release() {
-  [ "$CFG_LOCK_HELD" = "1" ] &amp;&amp; rm -f "$CFG_LOCK"
+  # Re-read and compare the token before deleting (matches incus_cfg_lock_release()
+  # in IncusHelpers.php and releaseCfgLock() in config-sync.service.ts) — a bare
+  # "did I ever hold it" flag isn't enough: if our lock went stale and was stolen
+  # by another writer, we must not delete *their* lock out from under them.
+  [ -n "$CFG_LOCK_TOKEN" ] &amp;&amp; [ "$(cat "$CFG_LOCK" 2>/dev/null)" = "$CFG_LOCK_TOKEN" ] &amp;&amp; rm -f "$CFG_LOCK"
 }
 
-cfg_lock_acquire || true # proceed best-effort even on timeout; never block install
+if ! cfg_lock_acquire; then
+  echo "incus: could not acquire incus.cfg lock within 3s; proceeding without it (best-effort, never block install)" >&amp;2
+fi
 # upgrade path: rename legacy JAIL_* keys (pre-rename installs) to DEVCONTAINER_*,
 # preserving the user's values. No-op if already migrated or never present.
 for old in JAIL_BRIDGE JAIL_SUBNET JAIL_NAT JAIL_IPV6 JAIL_PROFILE JAIL_IMAGE \

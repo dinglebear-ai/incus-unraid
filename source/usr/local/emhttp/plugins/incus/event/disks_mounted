@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fires when the array comes up. Start incusd (state lives on the array, so we
-# must wait until now) then apply the jail environment from incus.cfg.
+# must wait until now) then apply the dev container environment from incus.cfg.
 CFG="/boot/config/plugins/incus/incus.cfg"
 [ -f "$CFG" ] || exit 0
 . "$CFG"

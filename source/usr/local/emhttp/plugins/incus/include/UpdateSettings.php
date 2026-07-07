@@ -33,9 +33,14 @@ foreach (['DEVCONTAINER_IMAGE', 'DEVCONTAINER_PROFILE', 'DEVCONTAINER_CPU', 'DEV
     }
 }
 
-incus_save_cfg($updates);
+$result = incus_save_cfg($updates);
+// incus_save_cfg's own quote/newline backstop can drop a key even after it
+// passed incus_validate_cfg_field() above (e.g. a future field added here
+// without a matching whitelist pattern) — fold those into the same banner
+// rather than letting the edit vanish with no indication anything happened.
+$rejected = array_unique(array_merge($rejected, $result['dropped']));
 
-$query = 'saved=1';
+$query = $result['ok'] ? 'saved=1' : 'saveerror=1';
 if (!empty($rejected)) {
     $query .= '&rejected=' . urlencode(implode(',', $rejected));
 }

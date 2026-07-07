@@ -2,7 +2,7 @@ Menu="Incus"
 Title="Incus"
 Icon="icon-u-globe"
 Tag="cube"
-Cond="(strpos(@file_get_contents('/boot/config/plugins/incus/incus.cfg'),'WEBGUI_ENABLE=\"false\"')===false)"
+Cond="(preg_match('/WEBGUI_ENABLE\s*=\s*[' . chr(34) . chr(39) . ']false[' . chr(34) . chr(39) . ']/', @file_get_contents('/boot/config/plugins/incus/incus.cfg'))!==1)"
 ---
 <?php
 require_once '/usr/local/emhttp/webGui/include/Wrappers.php';
@@ -10,6 +10,7 @@ require_once "$docroot/plugins/incus/include/IncusHelpers.php";
 
 $cfg = incus_load_cfg();
 $serviceEnabled = ($cfg['SERVICE'] ?? 'disabled') === 'enabled';
+$webguiEnabled = incus_cfg_bool($cfg, 'WEBGUI_ENABLE', true);
 $dashboardEnabled = incus_cfg_bool($cfg, 'DASHBOARD_WIDGET_ENABLE', true);
 
 // Fixed label whitelist for the "rejected fields" banner — only ever echoes
@@ -35,9 +36,14 @@ $rejectedKeys = array_intersect(
 .incus-banner{padding:8px 12px;margin-bottom:8px;border-radius:4px;}
 .incus-banner-ok{background:#1f3d2e;color:#7dd3c7;}
 .incus-banner-warn{background:#3d2f1f;color:#c6a36b;}
+.incus-banner-error{background:#3d1f1f;color:#c78490;}
 </style>
 
-<?php if (isset($_GET['saved'])): ?>
+<?php if (isset($_GET['saveerror'])): ?>
+  <div class="incus-banner incus-banner-error">
+    Failed to save settings — incus.cfg may be missing or not writable. Check the array-start log / incusd permissions.
+  </div>
+<?php elseif (isset($_GET['saved'])): ?>
   <?php if (!empty($rejectedKeys)): ?>
     <div class="incus-banner incus-banner-warn">
       Settings saved, but rejected (unchanged): <?= htmlspecialchars(implode(', ', array_map(fn($k) => $fieldLabels[$k], $rejectedKeys))) ?>.
@@ -60,7 +66,7 @@ $rejectedKeys = array_intersect(
     Autostart incusd on array start</label><br>
 
   <input type="hidden" name="WEBGUI_ENABLE" value="false">
-  <label><input type="checkbox" name="WEBGUI_ENABLE" value="true" checked>
+  <label><input type="checkbox" name="WEBGUI_ENABLE" value="true" <?= $webguiEnabled ? 'checked' : '' ?>>
     Show this "Incus" tab <span style="color:#888;">(unchecking hides it from the navbar after your next page load/refresh)</span></label><br>
 
   <input type="hidden" name="DASHBOARD_WIDGET_ENABLE" value="false">

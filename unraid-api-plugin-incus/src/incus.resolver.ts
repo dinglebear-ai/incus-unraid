@@ -1,6 +1,7 @@
 import { Resolver, Query, Mutation, Args, registerEnumType } from "@nestjs/graphql";
 import { ForbiddenException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { resolve as resolvePath, sep as pathSep } from "node:path";
 import { IncusService } from "./incus.service.js";
 import { DevContainer } from "./config.entity.js";
 
@@ -53,13 +54,17 @@ export class IncusResolver {
     @Args("name") name: string,
     @Args("hostPath") hostPath: string
   ): Promise<boolean> {
-    // H5 fix: validate hostPath is under the configured workspace root
+    // H5 fix: validate hostPath is under the configured workspace root.
+    // Both sides are resolved (collapses `..`/`.`/repeated slashes) and compared
+    // by path boundary, not raw string prefix — a bare startsWith() would let
+    // `/srv/agent-devcontainers-evil` or a `..`-laden path slip through.
     const wsRoot = this.config.get<string>("incus.devContainerWorkspaceRoot", "/srv/agent-devcontainers");
-    const resolved = hostPath.replace(/\/+$/, "");
-    if (!resolved.startsWith(wsRoot)) {
+    const normalizedRoot = resolvePath(wsRoot);
+    const normalizedHostPath = resolvePath(hostPath);
+    if (normalizedHostPath !== normalizedRoot && !normalizedHostPath.startsWith(normalizedRoot + pathSep)) {
       throw new ForbiddenException(`hostPath must be under the workspace root (${wsRoot})`);
     }
-    await this.incus.setDevContainerWorkspace(name, hostPath);
+    await this.incus.setDevContainerWorkspace(name, normalizedHostPath);
     return true;
   }
 

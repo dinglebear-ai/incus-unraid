@@ -9,7 +9,11 @@ require_once __DIR__ . '/IncusHelpers.php';
 $healthy = incus_ping();
 $containers = $healthy ? incus_list_dev_containers() : [];
 $running = count(array_filter($containers, fn($c) => $c['status'] === 'Running'));
-$stopped = count($containers) - $running;
+$stopped = count(array_filter($containers, fn($c) => $c['status'] === 'Stopped'));
+// Anything else (Frozen, Error, Starting, ...) — don't lump these in with
+// "stopped", that misleads an admin into thinking a frozen/errored container
+// just needs starting when it actually needs attention.
+$other = count($containers) - $running - $stopped;
 ?>
 <div class="incus-dashboard-tile">
   <div class="incus-tile-title"><i class="fa fa-cube"></i> Incus Dev Containers</div>
@@ -19,7 +23,8 @@ $stopped = count($containers) - $running;
     <div class="incus-tile-summary">
       <?= count($containers) ?> dev container<?= count($containers) === 1 ? '' : 's' ?>
       &nbsp;(<span class="incus-tile-running"><?= $running ?> running</span>,
-      <span class="incus-tile-stopped"><?= $stopped ?> stopped</span>)
+      <span class="incus-tile-stopped"><?= $stopped ?> stopped</span><?php if ($other > 0): ?>,
+      <span class="incus-tile-other"><?= $other ?> other</span><?php endif; ?>)
     </div>
   <?php endif; ?>
 </div>
@@ -29,4 +34,5 @@ $stopped = count($containers) - $running;
 .incus-tile-error{color:#c0392b;}
 .incus-tile-running{color:#27ae60;}
 .incus-tile-stopped{color:#888;}
+.incus-tile-other{color:#c6a36b;}
 </style>

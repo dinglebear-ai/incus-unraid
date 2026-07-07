@@ -1,9 +1,13 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from "@nestjs/common";
 import { existsSync, readFileSync, writeFileSync, statSync, unlinkSync, renameSync, watch, FSWatcher } from "node:fs";
 import { join } from "node:path";
+import { plainToInstance } from "class-transformer";
+import { validateSync } from "class-validator";
 import { IncusConfig } from "./config.entity.js";
 
 const CFG_LOCK_STALE_MS = 15_000;
+const CFG_LOCK_RETRY_MS = 250;
+const CFG_LOCK_MAX_RETRIES = 5;
 
 @Injectable()
 export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
@@ -79,28 +83,42 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
   /**
    * Reads incus.json, and updates incus.cfg line-by-line while preserving comments and other settings.
    */
-  private syncJSONToCfg() {
+  private syncJSONToCfg(retriesLeft = CFG_LOCK_MAX_RETRIES) {
     if (this.isSyncing) return;
     if (!existsSync(this.jsonPath)) return;
 
     // incus.cfg is also written by the PHP webGUI (UpdateSettings.php) and
     // the .plg installer's migration step (bash). This lock is shared with
     // both — see acquireCfgLockNonBlocking() below for why it can't block.
+    // A bounded retry (rather than giving up after one attempt) matters here:
+    // unlike syncCfgToJSON (which just re-reads the same source of truth on
+    // the next fs event), the JSON change we're trying to sync right now has
+    // already happened — if we give up permanently and nothing touches
+    // incus.json again, that change would silently never reach incus.cfg.
     const lockToken = this.acquireCfgLockNonBlocking();
     if (!lockToken) {
-      this.logger.debug(`incus.cfg is locked by another writer; skipping this sync cycle`);
+      if (retriesLeft > 0) {
+        this.logger.debug(
+          `incus.cfg is locked by another writer; retrying in ${CFG_LOCK_RETRY_MS}ms (${retriesLeft} attempts left)`
+        );
+        setTimeout(() => this.syncJSONToCfg(retriesLeft - 1), CFG_LOCK_RETRY_MS);
+      } else {
+        this.logger.warn(`incus.cfg stayed locked after repeated retries; giving up on this sync cycle`);
+      }
       return;
     }
 
     try {
       this.isSyncing = true;
       const jsonContent = readFileSync(this.jsonPath, "utf-8");
-      const parsedJson: Partial<IncusConfig> = JSON.parse(jsonContent);
+      let parsedJson: Partial<IncusConfig> = JSON.parse(jsonContent);
 
       if (!existsSync(this.cfgPath)) {
         this.logger.warn(`incus.cfg not found at ${this.cfgPath}, cannot sync from JSON`);
         return;
       }
+
+      parsedJson = this.rejectInvalidFields(parsedJson);
 
       const cfgContent = readFileSync(this.cfgPath, "utf-8");
       const parsedCfg = this.parseShellConfig(cfgContent);
@@ -118,6 +136,29 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
       this.isSyncing = false;
       this.releaseCfgLock(lockToken);
     }
+  }
+
+  /**
+   * Whitelist-validate free-text fields before they can reach incus.cfg from
+   * this direction — mirrors incus_validate_cfg_field()'s role in
+   * UpdateSettings.php. Without this, incus.json (writable by anything that
+   * calls the future config-persistence/mutation path this class's own
+   * class-level doc comment calls out as a follow-up) could carry an
+   * unvalidated value straight into a file incus-init.sh sources as root.
+   * Invalid fields are dropped (logged), not just silently written.
+   */
+  private rejectInvalidFields(config: Partial<IncusConfig>): Partial<IncusConfig> {
+    const instance = plainToInstance(IncusConfig, config);
+    const errors = validateSync(instance, { skipMissingProperties: true });
+    if (errors.length === 0) return config;
+
+    const result = { ...config };
+    const badKeys = errors.map((e) => e.property as keyof IncusConfig);
+    this.logger.warn(`Rejecting invalid incus.json field(s) before writing to incus.cfg: ${badKeys.join(", ")}`);
+    for (const key of badKeys) {
+      delete result[key];
+    }
+    return result;
   }
 
   /**
@@ -143,8 +184,12 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
           writeFileSync(this.cfgLockPath, token, { flag: "wx" });
           return token;
         }
-      } catch {
-        // lock vanished, or a competitor grabbed it between our stat and unlink — give up this round
+      } catch (stealErr) {
+        // Usually benign (lock vanished, or a competitor grabbed it between our
+        // stat and unlink) — but also the only place an unexpected filesystem
+        // error (EACCES/EROFS on /boot) would surface, so log it rather than
+        // swallowing silently; both cases fall through to "give up this round".
+        this.logger.debug(`incus.cfg lock steal attempt failed: ${(stealErr as Error).message}`);
       }
       return null;
     }
@@ -156,8 +201,11 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
       if (readFileSync(this.cfgLockPath, "utf-8") === token) {
         unlinkSync(this.cfgLockPath);
       }
-    } catch {
-      // already gone — fine
+    } catch (err) {
+      // Usually just "already gone" (fine, release is best-effort) — logged at
+      // debug rather than swallowed so an unexpected permissions error isn't
+      // indistinguishable from the benign case.
+      this.logger.debug(`incus.cfg lock release no-op: ${(err as Error).message}`);
     }
   }
 

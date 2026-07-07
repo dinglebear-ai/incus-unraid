@@ -33,7 +33,7 @@ Modeled on the pattern from [weisser-zwerg.dev's Incus Codex Jail](https://weiss
 │       └── NestJS module ──→ Incus REST API           │
 │                             (unix socket, no CLI)    │
 │                                                      │
-│  ┌─── agentbr0 (198.18.0.0/15) ───┐                │
+│  ┌─── agentbr0 (198.18.0.0/24) ───┐                │
 │  │  agent1   agent2   agent3  ...  │                │
 │  │  ✓ Internet  ✗ LAN  ✗ NAS      │                │
 │  └─────────────────────────────────┘                │
@@ -76,7 +76,7 @@ plugin. Key defaults:
 |---|---|---|
 | `SERVICE` | `disabled` | Set to `enabled` to autostart on array start |
 | `STORAGE_DRIVER` / `STORAGE_SOURCE` | `zfs` / `nvme/incus` | Dedicated ZFS dataset; created if missing |
-| `DEVCONTAINER_BRIDGE` / `DEVCONTAINER_SUBNET` | `agentbr0` / `198.18.0.1/15` | RFC 2544 range, won't collide with home LAN |
+| `DEVCONTAINER_BRIDGE` / `DEVCONTAINER_SUBNET` | `agentbr0` / `198.18.0.1/24` | RFC 2544 range, won't collide with home LAN |
 | `ACL_BLOCK` | `10/8,172.16/12,192.168/16,169.254/16` | LAN ban. **Tailscale `100.64/10` NOT blocked** |
 | `ACL_ALLOW` | *(empty)* | Allow-holes punched before the block list |
 | `DEVCONTAINER_IMAGE` | `images:debian/trixie/cloud` | Must be a `/cloud` variant for cloud-init |
