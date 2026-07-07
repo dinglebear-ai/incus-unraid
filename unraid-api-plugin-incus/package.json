@@ -1,7 +1,7 @@
 {
   "name": "unraid-api-plugin-incus",
   "version": "0.1.0",
-  "description": "Manage LAN-banned Incus agent jails from the Unraid API (GraphQL over the Incus REST socket).",
+  "description": "Manage LAN-banned Incus agent dev containers from the Unraid API (GraphQL over the Incus REST socket).",
   "type": "module",
   "exports": {
     ".": {

@@ -1,0 +1,120 @@
+Menu="Incus"
+Title="Incus"
+Icon="icon-u-globe"
+Tag="cube"
+Cond="(strpos(@file_get_contents('/boot/config/plugins/incus/incus.cfg'),'WEBGUI_ENABLE=\"false\"')===false)"
+---
+<?php
+require_once '/usr/local/emhttp/webGui/include/Wrappers.php';
+require_once "$docroot/plugins/incus/include/IncusHelpers.php";
+
+$cfg = incus_load_cfg();
+$serviceEnabled = ($cfg['SERVICE'] ?? 'disabled') === 'enabled';
+$dashboardEnabled = incus_cfg_bool($cfg, 'DASHBOARD_WIDGET_ENABLE', true);
+
+// Fixed label whitelist for the "rejected fields" banner — only ever echoes
+// one of these known labels, never raw query-string content, so there's no
+// reflected-XSS surface even though htmlspecialchars() below is also applied.
+$fieldLabels = [
+    'DEVCONTAINER_IMAGE' => 'Default dev container image',
+    'DEVCONTAINER_PROFILE' => 'Default dev container profile',
+    'DEVCONTAINER_CPU' => 'CPU cap',
+    'DEVCONTAINER_MEMORY' => 'Memory cap',
+];
+$rejectedKeys = array_intersect(
+    explode(',', $_GET['rejected'] ?? ''),
+    array_keys($fieldLabels)
+);
+?>
+<style>
+.incus-devcontainers-table{width:100%;border-collapse:collapse;margin-top:8px;}
+.incus-devcontainers-table th,.incus-devcontainers-table td{padding:6px 10px;text-align:left;border-bottom:1px solid #444;}
+.incus-status-Running{color:#27ae60;font-weight:600;}
+.incus-status-Stopped{color:#888;}
+.incus-actions button{margin-right:4px;}
+.incus-banner{padding:8px 12px;margin-bottom:8px;border-radius:4px;}
+.incus-banner-ok{background:#1f3d2e;color:#7dd3c7;}
+.incus-banner-warn{background:#3d2f1f;color:#c6a36b;}
+</style>
+
+<?php if (isset($_GET['saved'])): ?>
+  <?php if (!empty($rejectedKeys)): ?>
+    <div class="incus-banner incus-banner-warn">
+      Settings saved, but rejected (unchanged): <?= htmlspecialchars(implode(', ', array_map(fn($k) => $fieldLabels[$k], $rejectedKeys))) ?>.
+    </div>
+  <?php else: ?>
+    <div class="incus-banner incus-banner-ok">Settings saved.</div>
+  <?php endif; ?>
+<?php endif; ?>
+
+<div class="incus-summary">
+<?php require "$docroot/plugins/incus/include/DashboardTile.php"; ?>
+</div>
+
+<h3>Settings</h3>
+<form method="POST" action="/plugins/incus/include/UpdateSettings.php">
+  <input type="hidden" name="csrf_token" value="<?= $var['csrf_token'] ?>">
+
+  <input type="hidden" name="SERVICE" value="disabled">
+  <label><input type="checkbox" name="SERVICE" value="enabled" <?= $serviceEnabled ? 'checked' : '' ?>>
+    Autostart incusd on array start</label><br>
+
+  <input type="hidden" name="WEBGUI_ENABLE" value="false">
+  <label><input type="checkbox" name="WEBGUI_ENABLE" value="true" checked>
+    Show this "Incus" tab <span style="color:#888;">(unchecking hides it from the navbar after your next page load/refresh)</span></label><br>
+
+  <input type="hidden" name="DASHBOARD_WIDGET_ENABLE" value="false">
+  <label><input type="checkbox" name="DASHBOARD_WIDGET_ENABLE" value="true" <?= $dashboardEnabled ? 'checked' : '' ?>>
+    Show dev-container-status box on Main/Dashboard</label><br><br>
+
+  <label>Default dev container image:
+    <input type="text" name="DEVCONTAINER_IMAGE" value="<?= htmlspecialchars($cfg['DEVCONTAINER_IMAGE'] ?? '') ?>" size="30"></label><br>
+  <label>Default dev container profile:
+    <input type="text" name="DEVCONTAINER_PROFILE" value="<?= htmlspecialchars($cfg['DEVCONTAINER_PROFILE'] ?? '') ?>" size="20"></label><br>
+  <label>CPU cap:
+    <input type="text" name="DEVCONTAINER_CPU" value="<?= htmlspecialchars($cfg['DEVCONTAINER_CPU'] ?? '') ?>" size="6"></label>
+  <label>Memory cap:
+    <input type="text" name="DEVCONTAINER_MEMORY" value="<?= htmlspecialchars($cfg['DEVCONTAINER_MEMORY'] ?? '') ?>" size="8"></label><br><br>
+
+  <button type="submit">Apply</button>
+</form>
+
+<h3>Dev Containers</h3>
+<table class="incus-devcontainers-table" id="incus-devcontainers-table">
+  <thead><tr><th>Name</th><th>Status</th><th>IPv4</th><th>Actions</th></tr></thead>
+  <tbody>
+  <?php $containers = incus_list_dev_containers(); ?>
+  <?php if (empty($containers)): ?>
+    <tr><td colspan="4">No dev containers yet.</td></tr>
+  <?php endif; ?>
+  <?php foreach ($containers as $container): ?>
+    <tr>
+      <td><?= htmlspecialchars($container['name']) ?></td>
+      <td class="incus-status-<?= htmlspecialchars($container['status']) ?>"><?= htmlspecialchars($container['status']) ?></td>
+      <td><?= htmlspecialchars($container['ipv4'] ?? '—') ?></td>
+      <td class="incus-actions">
+        <button onclick="incusDevContainerAction('<?= htmlspecialchars($container['name'], ENT_QUOTES) ?>','start')">Start</button>
+        <button onclick="incusDevContainerAction('<?= htmlspecialchars($container['name'], ENT_QUOTES) ?>','stop')">Stop</button>
+        <button onclick="incusDevContainerAction('<?= htmlspecialchars($container['name'], ENT_QUOTES) ?>','restart')">Restart</button>
+        <button onclick="if(confirm('Delete dev container <?= htmlspecialchars($container['name'], ENT_QUOTES) ?>?'))incusDevContainerAction('<?= htmlspecialchars($container['name'], ENT_QUOTES) ?>','delete')">Delete</button>
+      </td>
+    </tr>
+  <?php endforeach; ?>
+  </tbody>
+</table>
+
+<script>
+function incusDevContainerAction(name, action) {
+  fetch('/plugins/incus/include/DevContainerAction.php', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({name, action, csrf_token: '<?= $var['csrf_token'] ?>'}),
+  })
+    .then(r => r.json())
+    .then(resp => {
+      if (!resp.ok) { alert('Failed: ' + (resp.error || 'unknown error')); }
+      location.reload();
+    })
+    .catch(e => alert('Request failed: ' + e));
+}
+</script>

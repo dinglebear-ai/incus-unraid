@@ -110,8 +110,8 @@ export class IncusService {
     }
   }
 
-  /** List jails (instances) with state, expanded to name/status/ipv4. */
-  async listJails(): Promise<Array<{ name: string; status: string; ipv4?: string }>> {
+  /** List dev containers (instances) with state, expanded to name/status/ipv4. */
+  async listDevContainers(): Promise<Array<{ name: string; status: string; ipv4?: string }>> {
     const { metadata } = await this.call<Array<Record<string, any>>>(
       "GET",
       "/1.0/instances?recursion=2"
@@ -123,10 +123,10 @@ export class IncusService {
     }));
   }
 
-  /** Launch a jail from an image using the configured agent-jail profile. */
-  async launchJail(name: string, opts?: { image?: string; profile?: string }): Promise<void> {
-    const image = opts?.image ?? this.config.get<string>("incus.jailImage", "images:debian/trixie/cloud");
-    const profile = opts?.profile ?? this.config.get<string>("incus.jailProfile", "agent-jail");
+  /** Launch a dev container from an image using the configured devcontainer profile. */
+  async launchDevContainer(name: string, opts?: { image?: string; profile?: string }): Promise<void> {
+    const image = opts?.image ?? this.config.get<string>("incus.devContainerImage", "images:debian/trixie/cloud");
+    const profile = opts?.profile ?? this.config.get<string>("incus.devContainerProfile", "devcontainer");
     const colonIdx = image.indexOf(":");
     const remote = colonIdx > 0 ? image.substring(0, colonIdx) : "images";
     const alias = colonIdx > 0 ? image.substring(colonIdx + 1) : image;
@@ -148,7 +148,7 @@ export class IncusService {
   }
 
   /** start | stop | restart | freeze | unfreeze. */
-  async setState(name: string, action: "start" | "stop" | "restart" | "freeze" | "unfreeze"): Promise<void> {
+  async setDevContainerState(name: string, action: "start" | "stop" | "restart" | "freeze" | "unfreeze"): Promise<void> {
     await this.callAndWait("PUT", `/1.0/instances/${encodeURIComponent(name)}/state`, {
       action,
       timeout: action === "stop" ? 30 : 15,
@@ -156,7 +156,7 @@ export class IncusService {
     });
   }
 
-  async deleteJail(name: string): Promise<void> {
+  async deleteDevContainer(name: string): Promise<void> {
     // Best-effort stop before delete
     try {
       await this.callAndWait("PUT", `/1.0/instances/${encodeURIComponent(name)}/state`, {
@@ -170,8 +170,8 @@ export class IncusService {
     await this.callAndWait("DELETE", `/1.0/instances/${encodeURIComponent(name)}`);
   }
 
-  /** Repoint a jail's workspace disk device to a host directory (bring-your-cwd). */
-  async setWorkspace(name: string, hostPath: string): Promise<void> {
+  /** Repoint a dev container's workspace disk device to a host directory (bring-your-cwd). */
+  async setDevContainerWorkspace(name: string, hostPath: string): Promise<void> {
     const { metadata: inst } = await this.call<Record<string, any>>(
       "GET",
       `/1.0/instances/${encodeURIComponent(name)}`

@@ -3,7 +3,7 @@
   <!ENTITY name      "incus">
   <!ENTITY author    "jmagar">
   <!ENTITY version   "2026.07.01">
-  <!ENTITY launch    "Settings/IncusSettings">
+  <!ENTITY launch    "Incus/IncusSettings">
   <!ENTITY gitURL    "https://github.com/&author;/unraid-&name;-plugin/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
   <!ENTITY txz       "&name;-unraid-7.0.0-5-x86_64-1.txz">
@@ -17,7 +17,10 @@
 <CHANGES>
 ###2026.07.01
 - Initial release: Incus 7.0 LTS (repackaged from Debian trixie), LAN-banned
-  agent-jail environment, config-driven idempotent init on array start.
+  agent dev-container environment, config-driven idempotent init on array start.
+- Added the "Incus" navbar tab and Main/Dashboard dev-container-status box
+  (webGUI), and renamed JAIL_* config keys to DEVCONTAINER_* (auto-migrated
+  on upgrade).
 </CHANGES>
 
 <!-- clean older txz payloads -->
@@ -39,6 +42,55 @@ rm -f $(ls &plugin;/&name;*.txz 2>/dev/null | grep -v '&txz;')
 if [ ! -f "&plugin;/incus.cfg" ]; then
   cp "&emhttp;/incus.cfg" "&plugin;/incus.cfg"
 fi
+
+# Cross-process mutex for incus.cfg edits, shared with the PHP webGUI
+# (UpdateSettings.php) and the Node config-sync watcher (IncusConfigSyncService).
+# Same sentinel-lockfile protocol on all three (no shared kernel flock() across
+# bash/PHP/Node without a native addon): atomic exclusive create, stale timeout,
+# never blocks the install indefinitely.
+CFG_LOCK="&plugin;/incus.cfg.lock"
+CFG_LOCK_HELD=0
+cfg_lock_acquire() {
+  local waited=0
+  while true; do
+    if ( set -o noclobber; : > "$CFG_LOCK" ) 2>/dev/null; then
+      echo "$$" > "$CFG_LOCK"
+      CFG_LOCK_HELD=1
+      return 0
+    fi
+    local mtime
+    mtime=$(stat -c %Y "$CFG_LOCK" 2>/dev/null || echo 0)
+    if [ $(( $(date +%s) - mtime )) -gt 15 ]; then
+      rm -f "$CFG_LOCK" # holder likely crashed; steal it
+      continue
+    fi
+    [ "$waited" -ge 3 ] &amp;&amp; return 1
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+cfg_lock_release() {
+  [ "$CFG_LOCK_HELD" = "1" ] &amp;&amp; rm -f "$CFG_LOCK"
+}
+
+cfg_lock_acquire || true # proceed best-effort even on timeout; never block install
+# upgrade path: rename legacy JAIL_* keys (pre-rename installs) to DEVCONTAINER_*,
+# preserving the user's values. No-op if already migrated or never present.
+for old in JAIL_BRIDGE JAIL_SUBNET JAIL_NAT JAIL_IPV6 JAIL_PROFILE JAIL_IMAGE \
+           JAIL_NESTING JAIL_CPU JAIL_MEMORY JAIL_WORKSPACE_ROOT JAIL_AGENT_UID \
+           JAIL_AGENT_GID JAIL_BIND_MOUNTS; do
+  new="DEVCONTAINER_${old#JAIL_}"
+  if grep -q "^${old}=" "&plugin;/incus.cfg" &amp;&amp; ! grep -q "^${new}=" "&plugin;/incus.cfg"; then
+    sed -i "s/^${old}=/${new}=/" "&plugin;/incus.cfg"
+  fi
+done
+# upgrade path: append any new keys introduced since the user's cfg was created
+# (never touches existing lines — same "never clobber user edits" rule as above)
+for kv in 'WEBGUI_ENABLE="true"' 'DASHBOARD_WIDGET_ENABLE="true"'; do
+  key="${kv%%=*}"
+  grep -q "^${key}=" "&plugin;/incus.cfg" || echo "$kv" >> "&plugin;/incus.cfg"
+done
+cfg_lock_release
 # make scripts executable
 chmod +x &emhttp;/scripts/*.sh &emhttp;/event/* 2>/dev/null
 # symlink rc script into /etc/rc.d so it's callable as a service
@@ -51,11 +103,11 @@ getent group incus-admin >/dev/null 2>&amp;1 || groupadd -r incus-admin
 
 <FILE Name="&emhttp;/README.md">
 <INLINE>
-**Incus for Unraid — LAN-banned agent jails**
+**Incus for Unraid — LAN-banned agent dev containers**
 
 Runs the Incus system-container manager on Unraid, purpose-built for isolated
-coding-agent / stdio-MCP workspaces. Jails get a dedicated NAT bridge that is
-firewalled off from your LAN (egress deny-list) while keeping Internet access,
+coding-agent / stdio-MCP workspaces. Dev containers get a dedicated NAT bridge
+that is firewalled off from your LAN (egress deny-list) while keeping Internet access,
 so an agent (or a compromised dependency) can't reach your NAS, routers, or
 internal services. All network/storage policy is configured in
 `/boot/config/plugins/incus/incus.cfg`.

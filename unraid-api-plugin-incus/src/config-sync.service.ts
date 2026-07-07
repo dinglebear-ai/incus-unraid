@@ -1,7 +1,9 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from "@nestjs/common";
-import { existsSync, readFileSync, writeFileSync, watch, FSWatcher } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, statSync, unlinkSync, renameSync, watch, FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { IncusConfig } from "./config.entity.js";
+
+const CFG_LOCK_STALE_MS = 15_000;
 
 @Injectable()
 export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
@@ -18,6 +20,8 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
   private readonly jsonPath = existsSync("/boot/config/plugins/incus/incus.json")
     ? "/boot/config/plugins/incus/incus.json"
     : join(process.cwd(), "incus.json");
+
+  private readonly cfgLockPath = `${this.cfgPath}.lock`;
 
   onModuleInit() {
     this.logger.log(`Initializing config sync (cfg: ${this.cfgPath}, json: ${this.jsonPath})`);
@@ -63,7 +67,7 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
       if (this.isConfigDifferent(currentJson, mappedConfig)) {
         this.logger.log(`Syncing changes from incus.cfg to incus.json`);
         const newJson = { ...currentJson, ...mappedConfig };
-        writeFileSync(this.jsonPath, JSON.stringify(newJson, null, 2), "utf-8");
+        this.writeFileAtomic(this.jsonPath, JSON.stringify(newJson, null, 2));
       }
     } catch (err) {
       this.logger.error(`Error syncing incus.cfg to incus.json: ${(err as Error).message}`);
@@ -78,6 +82,15 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
   private syncJSONToCfg() {
     if (this.isSyncing) return;
     if (!existsSync(this.jsonPath)) return;
+
+    // incus.cfg is also written by the PHP webGUI (UpdateSettings.php) and
+    // the .plg installer's migration step (bash). This lock is shared with
+    // both — see acquireCfgLockNonBlocking() below for why it can't block.
+    const lockToken = this.acquireCfgLockNonBlocking();
+    if (!lockToken) {
+      this.logger.debug(`incus.cfg is locked by another writer; skipping this sync cycle`);
+      return;
+    }
 
     try {
       this.isSyncing = true;
@@ -97,13 +110,62 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
       if (this.isConfigDifferent(mappedConfig, parsedJson)) {
         this.logger.log(`Syncing changes from incus.json to incus.cfg`);
         const updatedCfgContent = this.updateShellConfig(cfgContent, parsedJson);
-        writeFileSync(this.cfgPath, updatedCfgContent, "utf-8");
+        this.writeFileAtomic(this.cfgPath, updatedCfgContent);
       }
     } catch (err) {
       this.logger.error(`Error syncing incus.json to incus.cfg: ${(err as Error).message}`);
     } finally {
       this.isSyncing = false;
+      this.releaseCfgLock(lockToken);
     }
+  }
+
+  /**
+   * Single-attempt, non-blocking acquire of the same sentinel-lockfile mutex
+   * used by the PHP webGUI (UpdateSettings.php, via incus_cfg_lock_acquire())
+   * and the .plg installer's migration step (bash) — atomic exclusive create,
+   * a stale timeout so a crashed holder can't wedge things forever. Unlike
+   * those two this runs inside a live NestJS event loop, so it must never
+   * block: one try, then give up immediately. The debounced file watcher
+   * will simply retry on the next change event if this attempt loses the race.
+   */
+  private acquireCfgLockNonBlocking(): string | null {
+    const token = `${process.pid}-${Math.random().toString(16).slice(2)}`;
+    try {
+      writeFileSync(this.cfgLockPath, token, { flag: "wx" });
+      return token;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") return null;
+      try {
+        const age = Date.now() - statSync(this.cfgLockPath).mtimeMs;
+        if (age > CFG_LOCK_STALE_MS) {
+          unlinkSync(this.cfgLockPath); // holder likely crashed; steal it
+          writeFileSync(this.cfgLockPath, token, { flag: "wx" });
+          return token;
+        }
+      } catch {
+        // lock vanished, or a competitor grabbed it between our stat and unlink — give up this round
+      }
+      return null;
+    }
+  }
+
+  private releaseCfgLock(token: string | null): void {
+    if (!token) return;
+    try {
+      if (readFileSync(this.cfgLockPath, "utf-8") === token) {
+        unlinkSync(this.cfgLockPath);
+      }
+    } catch {
+      // already gone — fine
+    }
+  }
+
+  /** Write-to-temp-then-rename so a concurrent reader never sees a torn file. */
+  private writeFileAtomic(path: string, content: string): void {
+    const tmpPath = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, content, "utf-8");
+    renameSync(tmpPath, path);
   }
 
   /**
@@ -140,10 +202,13 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
     const keys: Array<keyof IncusConfig> = [
       "enabled",
       "stateDir",
-      "jailBridge",
+      "devContainerBridge",
       "aclBlock",
-      "jailImage",
-      "jailProfile",
+      "devContainerImage",
+      "devContainerProfile",
+      "devContainerWorkspaceRoot",
+      "webguiEnable",
+      "dashboardWidgetEnable",
     ];
     for (const key of keys) {
       if (a[key] !== b[key] && b[key] !== undefined) {
@@ -192,17 +257,26 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
     if (shell.INCUS_DIR !== undefined) {
       config.stateDir = shell.INCUS_DIR;
     }
-    if (shell.JAIL_BRIDGE !== undefined) {
-      config.jailBridge = shell.JAIL_BRIDGE;
+    if (shell.DEVCONTAINER_BRIDGE !== undefined) {
+      config.devContainerBridge = shell.DEVCONTAINER_BRIDGE;
     }
     if (shell.ACL_BLOCK !== undefined) {
       config.aclBlock = shell.ACL_BLOCK;
     }
-    if (shell.JAIL_IMAGE !== undefined) {
-      config.jailImage = shell.JAIL_IMAGE;
+    if (shell.DEVCONTAINER_IMAGE !== undefined) {
+      config.devContainerImage = shell.DEVCONTAINER_IMAGE;
     }
-    if (shell.JAIL_PROFILE !== undefined) {
-      config.jailProfile = shell.JAIL_PROFILE;
+    if (shell.DEVCONTAINER_PROFILE !== undefined) {
+      config.devContainerProfile = shell.DEVCONTAINER_PROFILE;
+    }
+    if (shell.DEVCONTAINER_WORKSPACE_ROOT !== undefined) {
+      config.devContainerWorkspaceRoot = shell.DEVCONTAINER_WORKSPACE_ROOT;
+    }
+    if (shell.WEBGUI_ENABLE !== undefined) {
+      config.webguiEnable = shell.WEBGUI_ENABLE.toLowerCase() === "true";
+    }
+    if (shell.DASHBOARD_WIDGET_ENABLE !== undefined) {
+      config.dashboardWidgetEnable = shell.DASHBOARD_WIDGET_ENABLE.toLowerCase() === "true";
     }
     return config;
   }
@@ -215,10 +289,13 @@ export class IncusConfigSyncService implements OnModuleInit, OnModuleDestroy {
     const keyMap: Record<keyof IncusConfig, string> = {
       enabled: "SERVICE",
       stateDir: "INCUS_DIR",
-      jailBridge: "JAIL_BRIDGE",
+      devContainerBridge: "DEVCONTAINER_BRIDGE",
       aclBlock: "ACL_BLOCK",
-      jailImage: "JAIL_IMAGE",
-      jailProfile: "JAIL_PROFILE",
+      devContainerImage: "DEVCONTAINER_IMAGE",
+      devContainerProfile: "DEVCONTAINER_PROFILE",
+      devContainerWorkspaceRoot: "DEVCONTAINER_WORKSPACE_ROOT",
+      webguiEnable: "WEBGUI_ENABLE",
+      dashboardWidgetEnable: "DASHBOARD_WIDGET_ENABLE",
     };
 
     const newLines = lines.map((line) => {

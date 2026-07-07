@@ -1,0 +1,8 @@
+Menu="Dashboard"
+Title="Incus Dev Containers"
+Icon="icon-u-globe"
+Tag="cubes"
+Cond="(strpos(@file_get_contents('/boot/config/plugins/incus/incus.cfg'),'DASHBOARD_WIDGET_ENABLE=\"false\"')===false)"
+---
+<?php
+require_once "$docroot/plugins/incus/include/DashboardTile.php";

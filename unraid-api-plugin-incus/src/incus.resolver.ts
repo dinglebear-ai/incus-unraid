@@ -2,16 +2,16 @@ import { Resolver, Query, Mutation, Args, registerEnumType } from "@nestjs/graph
 import { ForbiddenException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { IncusService } from "./incus.service.js";
-import { Jail } from "./config.entity.js";
+import { DevContainer } from "./config.entity.js";
 
-enum JailAction {
+enum DevContainerAction {
   start = "start",
   stop = "stop",
   restart = "restart",
   freeze = "freeze",
   unfreeze = "unfreeze",
 }
-registerEnumType(JailAction, { name: "JailAction", description: "Jail lifecycle actions" });
+registerEnumType(DevContainerAction, { name: "DevContainerAction", description: "Dev container lifecycle actions" });
 
 @Resolver()
 export class IncusResolver {
@@ -25,47 +25,47 @@ export class IncusResolver {
     return this.incus.ping();
   }
 
-  @Query(() => [Jail], { description: "List all agent jails" })
-  async jails(): Promise<Jail[]> {
-    return this.incus.listJails();
+  @Query(() => [DevContainer], { description: "List all agent dev containers" })
+  async devContainers(): Promise<DevContainer[]> {
+    return this.incus.listDevContainers();
   }
 
-  @Mutation(() => Boolean, { description: "Launch a new LAN-banned agent jail" })
-  async launchJail(
+  @Mutation(() => Boolean, { description: "Launch a new LAN-banned agent dev container" })
+  async launchDevContainer(
     @Args("name") name: string,
     @Args("image", { nullable: true }) image?: string
   ): Promise<boolean> {
-    await this.incus.launchJail(name, { image });
+    await this.incus.launchDevContainer(name, { image });
     return true;
   }
 
   @Mutation(() => Boolean)
-  async setJailState(
+  async setDevContainerState(
     @Args("name") name: string,
-    @Args("action", { type: () => JailAction }) action: JailAction
+    @Args("action", { type: () => DevContainerAction }) action: DevContainerAction
   ): Promise<boolean> {
-    await this.incus.setState(name, action);
+    await this.incus.setDevContainerState(name, action);
     return true;
   }
 
-  @Mutation(() => Boolean, { description: "Repoint a jail's /workspace to a host dir" })
-  async setJailWorkspace(
+  @Mutation(() => Boolean, { description: "Repoint a dev container's /workspace to a host dir" })
+  async setDevContainerWorkspace(
     @Args("name") name: string,
     @Args("hostPath") hostPath: string
   ): Promise<boolean> {
     // H5 fix: validate hostPath is under the configured workspace root
-    const wsRoot = this.config.get<string>("incus.workspaceRoot", "/srv/agent-jails");
+    const wsRoot = this.config.get<string>("incus.devContainerWorkspaceRoot", "/srv/agent-devcontainers");
     const resolved = hostPath.replace(/\/+$/, "");
     if (!resolved.startsWith(wsRoot)) {
       throw new ForbiddenException(`hostPath must be under the workspace root (${wsRoot})`);
     }
-    await this.incus.setWorkspace(name, hostPath);
+    await this.incus.setDevContainerWorkspace(name, hostPath);
     return true;
   }
 
   @Mutation(() => Boolean)
-  async deleteJail(@Args("name") name: string): Promise<boolean> {
-    await this.incus.deleteJail(name);
+  async deleteDevContainer(@Args("name") name: string): Promise<boolean> {
+    await this.incus.deleteDevContainer(name);
     return true;
   }
 }

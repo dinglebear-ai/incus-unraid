@@ -1,16 +1,16 @@
 import { Module, Logger, Inject, Injectable } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { ConfigFilePersister } from "@unraid/shared/services/config-file.js";
-import { configFeature, IncusConfig } from "./config.entity.js";
-import { IncusService } from "./incus.service.js";
-import { IncusResolver } from "./incus.resolver.js";
+import { configFeature, IncusConfig } from "./src/config.entity.js";
+import { IncusService } from "./src/incus.service.js";
+import { IncusResolver } from "./src/incus.resolver.js";
 import { IncusConfigSyncService } from "./src/config-sync.service.js";
 
 /** Contract fields the unraid-api plugin loader validates against. */
 export const adapter = "nestjs";
 
 export const graphqlSchemaExtension = async () => `
-  type Jail {
+  type DevContainer {
     name: String!
     status: String!
     ipv4: String
@@ -18,14 +18,14 @@ export const graphqlSchemaExtension = async () => `
 
   extend type Query {
     incusHealthy: Boolean!
-    jails: [Jail!]!
+    devContainers: [DevContainer!]!
   }
 
   extend type Mutation {
-    launchJail(name: String!, image: String): Boolean!
-    setJailState(name: String!, action: String!): Boolean!
-    setJailWorkspace(name: String!, hostPath: String!): Boolean!
-    deleteJail(name: String!): Boolean!
+    launchDevContainer(name: String!, image: String): Boolean!
+    setDevContainerState(name: String!, action: String!): Boolean!
+    setDevContainerWorkspace(name: String!, hostPath: String!): Boolean!
+    deleteDevContainer(name: String!): Boolean!
   }
 `;
 

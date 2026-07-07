@@ -23,37 +23,55 @@ export class IncusConfig {
   stateDir!: string;
 
   @Expose()
-  @Field(() => String, { description: "Jail bridge name" })
+  @Field(() => String, { description: "Dev container bridge name" })
   @IsString()
-  jailBridge!: string;
+  devContainerBridge!: string;
 
   @Expose()
-  @Field(() => String, { description: "CIDRs the jail may NOT reach (comma-separated)" })
+  @Field(() => String, { description: "CIDRs the dev container may NOT reach (comma-separated)" })
   @IsString()
   aclBlock!: string;
 
   @Expose()
-  @Field(() => String, { description: "Default image for new jails" })
+  @Field(() => String, { description: "Default image for new dev containers" })
   @IsString()
-  jailImage!: string;
+  devContainerImage!: string;
 
   @Expose()
-  @Field(() => String, { description: "Profile applied to new jails" })
+  @Field(() => String, { description: "Profile applied to new dev containers" })
   @IsString()
-  jailProfile!: string;
+  devContainerProfile!: string;
+
+  @Expose()
+  @Field(() => String, { description: "Host dir holding per-dev-container workspaces" })
+  @IsString()
+  devContainerWorkspaceRoot!: string;
+
+  @Expose()
+  @Field(() => Boolean, { description: "Show the top-level \"Incus\" navbar tab" })
+  @IsBoolean()
+  webguiEnable!: boolean;
+
+  @Expose()
+  @Field(() => Boolean, { description: "Show the dev-container-status box on Main/Dashboard" })
+  @IsBoolean()
+  dashboardWidgetEnable!: boolean;
 }
 
 export const configFeature = registerAs<IncusConfig>("incus", () => ({
   enabled: false,
   stateDir: "/mnt/user/appdata/incus",
-  jailBridge: "agentbr0",
+  devContainerBridge: "agentbr0",
   aclBlock: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16",
-  jailImage: "images:debian/trixie/cloud",
-  jailProfile: "agent-jail",
+  devContainerImage: "images:debian/trixie/cloud",
+  devContainerProfile: "devcontainer",
+  devContainerWorkspaceRoot: "/srv/agent-devcontainers",
+  webguiEnable: true,
+  dashboardWidgetEnable: true,
 }));
 
 @ObjectType()
-export class Jail {
+export class DevContainer {
   @Field(() => String) name!: string;
   @Field(() => String) status!: string;
   @Field(() => String, { nullable: true }) ipv4?: string;
