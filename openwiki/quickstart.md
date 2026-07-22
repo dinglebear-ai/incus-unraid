@@ -126,7 +126,7 @@ No automated tests are present in the repository. Testing is manual via Unraid i
 ## OpenWiki maintenance workflow
 
 - Documentation generation is automated via `/.github/workflows/openwiki-update.yml`. The workflow installs `openwiki`, runs `openwiki code --update --print`, and creates an update PR containing `openwiki/`, `AGENTS.md`, `CLAUDE.md`, and the workflow file itself.
-- The OpenWiki run is configured to use the OpenRouter provider (`OPENWIKI_PROVIDER=openrouter`) with model `z-ai/glm-5.2` and reads secrets from repository secrets.
+- The OpenWiki run is configured to use OpenRouter (`OPENWIKI_PROVIDER=openrouter`) with model `z-ai/glm-5.2`, and reads `OPENROUTER_API_KEY` plus LangSmith tracing vars (`LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT`, `LANGCHAIN_TRACING_V2`) from repository secrets.
 
 ## Getting started
 
