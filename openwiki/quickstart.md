@@ -127,8 +127,8 @@ Unraid host.
 
 ## OpenWiki maintenance workflow
 
-- Documentation generation is automated via `/.github/workflows/openwiki-update.yml`. The workflow installs `openwiki@0.2.0`, runs `openwiki --update --print`, and creates an update PR limited to `openwiki/`.
-- The job joins Tailscale, preflights the private OpenAI-compatible API, and runs model `gpt-5.3-codex-spark` using `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`, and `OPENAI_COMPATIBLE_API_KEY` repository secrets.
+- Documentation generation is automated via `/.github/workflows/openwiki-update.yml`. The workflow installs `openwiki` and runs `openwiki code --update --print`.
+- It creates an update PR that includes `openwiki/`, `AGENTS.md`, `CLAUDE.md`, and `/.github/workflows/openwiki-update.yml`, then uses OpenRouter (`OPENWIKI_PROVIDER: openrouter`) with `OPENROUTER_API_KEY` and model `z-ai/glm-5.2` (plus optional LangSmith tracing via `LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT`, and `LANGCHAIN_TRACING_V2`).
 
 ## Getting started
 
